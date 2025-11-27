@@ -127,6 +127,14 @@ class DatabaseManager:
         self.conn.commit()
 
     def get_setting(self, key, default=None):
+    # Сначала проверяем переменные окружения
+        env_key = key.upper()
+        env_value = os.getenv(env_key)
+        if env_value is not None:
+            log.info(f"Loaded {key} from environment variable: {env_value[:10]}..." if len(env_value) > 10 else f"Loaded {key} from environment variable")
+            return env_value
+        
+        # Затем проверяем базу данных
         self.cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
         row = self.cursor.fetchone()
         return row['value'] if row else default
