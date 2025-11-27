@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  telegram-manager:
+    build: .
+    container_name: telegram-multimanager
+    volumes:
+      - ./sessions:/app/sessions
+      - ./data:/app/data
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
