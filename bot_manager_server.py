@@ -127,14 +127,6 @@ class DatabaseManager:
         self.conn.commit()
 
     def get_setting(self, key, default=None):
-    # Сначала проверяем переменные окружения
-        env_key = key.upper()
-        env_value = os.getenv(env_key)
-        if env_value is not None:
-            log.info(f"Loaded {key} from environment variable: {env_value[:10]}..." if len(env_value) > 10 else f"Loaded {key} from environment variable")
-            return env_value
-        
-        # Затем проверяем базу данных
         self.cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
         row = self.cursor.fetchone()
         return row['value'] if row else default
@@ -307,21 +299,39 @@ async def run_scheduler(acc_state, manager):
             await asyncio.sleep(5)
 
 async def send_messages(acc_state, acc_data, manager):
-    chat_ids = [int(c.strip()) if c.strip().lstrip('-').isdigit() else c.strip() for c in acc_data['chats'].split(',') if c.strip()]
+    # Разбираем чаты. Теперь поддерживаем формат ID:TOPIC (например -100123456:9995)
+    raw_chats = [c.strip() for c in acc_data['chats'].split(',') if c.strip()]
+    
     image = acc_data['image_path'] if acc_data['send_with_image'] and os.path.exists(acc_data['image_path']) else None
     
-    for chat in chat_ids:
+    for chat_entry in raw_chats:
         try:
+            # Логика разделения Чат и Топик
+            topic_id = None
+            if ':' in chat_entry:
+                chat_str, topic_str = chat_entry.split(':')
+                chat = int(chat_str) if chat_str.lstrip('-').isdigit() else chat_str
+                if topic_str.isdigit():
+                    topic_id = int(topic_str)
+            else:
+                chat = int(chat_entry) if chat_entry.lstrip('-').isdigit() else chat_entry
+
             message_text = process_spintax(acc_data['text'])
-            sent_message = await acc_state.client.send_file(chat, file=image, caption=message_text, parse_mode='md') if image else await acc_state.client.send_message(chat, message_text, parse_mode='md')
+            
+            # Отправка (добавлен аргумент reply_to для топиков)
+            if image:
+                sent_message = await acc_state.client.send_file(chat, file=image, caption=message_text, parse_mode='md', reply_to=topic_id)
+            else:
+                sent_message = await acc_state.client.send_message(chat, message_text, parse_mode='md', reply_to=topic_id)
             
             if sent_message:
                 await asyncio.sleep(DELETED_MESSAGE_CHECK_DELAY)
+                # Проверка (нужно учитывать топик, но get_messages обычно находит по ID)
                 check_message = await acc_state.client.get_messages(chat, ids=sent_message.id)
                 
                 if check_message:
                     manager.sent_messages.append((sent_message.chat_id, sent_message.id, acc_state.name))
-                    acc_state.logger.info(f"  -> Sent to {chat} (ID: {sent_message.id})")
+                    acc_state.logger.info(f"  -> Sent to {chat} (Topic: {topic_id}) (ID: {sent_message.id})")
                     manager.db.increment_stat(acc_state.id, 'messages_sent')
                 else:
                     error_text = f"Message to {chat} was deleted shortly after sending."
@@ -336,7 +346,6 @@ async def send_messages(acc_state, acc_data, manager):
             manager.add_error_log(acc_state.id, error_text)
             await asyncio.sleep(e.seconds + 2)
         
-        # Обработка банов
         except (UserDeactivatedError, UserBannedInChannelError) as e:
             error_text = f"CRITICAL: Account banned/deactivated: {e}"
             acc_state.logger.critical(error_text)
